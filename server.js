@@ -10,8 +10,13 @@ dotenv.config({ override: true });
 const app = express();
 
 // Middlewares
-const allowedOrigin = process.env.FRONTEND_URL || 'https://career-instructor-frontend-zyf2.vercel.app';
-app.use(cors({ origin: allowedOrigin, credentials: true }));
+app.use(cors({ 
+  origin: function(origin, callback) {
+    // Allow all origins to support Vercel preview URLs and local development
+    callback(null, true);
+  }, 
+  credentials: true 
+}));
 app.use(express.json());
 app.use(cookieParser());
 
