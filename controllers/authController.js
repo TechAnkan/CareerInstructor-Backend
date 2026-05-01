@@ -13,19 +13,14 @@ const generateTokens = (userId) => {
   return { accessToken, refreshToken };
 };
 
-// Simulated email sending (Ethereal Email)
+// Real email sending (Gmail SMTP)
 const sendOTPEmail = async (email, otp) => {
   try {
-    // Generate test SMTP service account from ethereal.email
-    let testAccount = await nodemailer.createTestAccount();
-
     let transporter = nodemailer.createTransport({
-      host: "smtp.ethereal.email",
-      port: 587,
-      secure: false,
+      service: 'gmail',
       auth: {
-        user: testAccount.user,
-        pass: testAccount.pass,
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
       },
     });
 
@@ -38,17 +33,16 @@ const sendOTPEmail = async (email, otp) => {
     });
 
     console.log("Message sent: %s", info.messageId);
-    console.log("Preview URL: %s", nodemailer.getTestMessageUrl(info));
-    // In development, return the preview URL so the user can easily click it
-    return nodemailer.getTestMessageUrl(info);
+    return true;
   } catch (error) {
     console.error("Error sending OTP email:", error);
+    return false;
   }
 };
 
 exports.register = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, name, mobile, address } = req.body;
     
     // Check if user exists
     let user = await User.findOne({ email });
@@ -64,19 +58,24 @@ exports.register = async (req, res) => {
     if (user) {
       // Unverified user trying again
       user.password = hashedPassword;
+      user.name = name || user.name;
+      user.mobile = mobile || user.mobile;
+      user.address = address || user.address;
       user.otp = otp;
       user.otpExpiresAt = otpExpiresAt;
       await user.save();
     } else {
-      user = await User.create({ email, password: hashedPassword, otp, otpExpiresAt });
+      user = await User.create({ email, password: hashedPassword, name, mobile, address, otp, otpExpiresAt });
     }
 
-    const previewUrl = await sendOTPEmail(email, otp);
+    const success = await sendOTPEmail(email, otp);
+    if (!success) {
+      return res.status(500).json({ message: "Failed to send OTP email. Please check SMTP configuration." });
+    }
 
     res.status(200).json({ 
-      message: "OTP sent to email.", 
-      email: user.email,
-      previewUrl // ONLY FOR DEVELOPMENT
+      message: "OTP sent to your email successfully.", 
+      email: user.email
     });
   } catch (error) {
     console.error(error);

@@ -18,10 +18,14 @@ app.use(cookieParser());
 const authRoutes = require('./routes/authRoutes');
 const roadmapRoutes = require('./routes/roadmapRoutes');
 const aiRoutes = require('./routes/aiRoutes');
+const profileRoutes = require('./routes/profileRoutes');
+const gamificationRoutes = require('./routes/gamificationRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/roadmaps', roadmapRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/profile', profileRoutes);
+app.use('/api/gamification', gamificationRoutes);
 // Basic Route
 app.get('/', (req, res) => {
   res.send('API is running...');
