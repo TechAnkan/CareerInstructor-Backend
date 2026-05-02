@@ -1,7 +1,7 @@
 const User = require('../models/User');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
+const admin = require('../config/firebaseAdmin');
 
 // Helper to generate a 6-digit OTP
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
@@ -13,89 +13,31 @@ const generateTokens = (userId) => {
   return { accessToken, refreshToken };
 };
 
-// Real email sending (Gmail SMTP)
-const sendOTPEmail = async (email, otp) => {
+exports.registerFirebase = async (req, res) => {
   try {
-    let transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-    });
-
-    let info = await transporter.sendMail({
-      from: '"CareerGuider AI" <noreply@careerguider.com>',
-      to: email,
-      subject: "Your Registration OTP",
-      text: `Your OTP for registration is ${otp}. It will expire in 10 minutes.`,
-      html: `<b>Your OTP for registration is <span style="font-size:20px; color:indigo;">${otp}</span>.</b> <p>It will expire in 10 minutes.</p>`,
-    });
-
-    console.log("Message sent: %s", info.messageId);
-    return true;
-  } catch (error) {
-    console.error("Error sending OTP email:", error);
-    return false;
-  }
-};
-
-exports.register = async (req, res) => {
-  try {
-    const { email, password, name, mobile, address } = req.body;
+    const { name, mobile, address, idToken } = req.body;
     
+    if (!idToken) return res.status(400).json({ message: "Firebase ID token is required." });
+
+    // Verify Firebase token
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const email = decodedToken.email;
+
     // Check if user exists
     let user = await User.findOne({ email });
-    if (user && user.isVerified) {
+    if (user) {
       return res.status(400).json({ message: "User already exists." });
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    const otp = generateOTP();
-    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
-
-    if (user) {
-      // Unverified user trying again
-      user.password = hashedPassword;
-      user.name = name || user.name;
-      user.mobile = mobile || user.mobile;
-      user.address = address || user.address;
-      user.otp = otp;
-      user.otpExpiresAt = otpExpiresAt;
-      await user.save();
-    } else {
-      user = await User.create({ email, password: hashedPassword, name, mobile, address, otp, otpExpiresAt });
-    }
-
-    const success = await sendOTPEmail(email, otp);
-    if (!success) {
-      return res.status(500).json({ message: "Failed to send OTP email. Please check SMTP configuration." });
-    }
-
-    res.status(200).json({ 
-      message: "OTP sent to your email successfully.", 
-      email: user.email
+    // Create user in MongoDB
+    user = await User.create({ 
+      email, 
+      name, 
+      mobile, 
+      address, 
+      isVerified: true, // Firebase handled verification (or handles it via email link)
+      password: "firebase_user_no_password" // Placeholder since Firebase handles password
     });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error during registration." });
-  }
-};
-
-exports.verifyOTP = async (req, res) => {
-  try {
-    const { email, otp } = req.body;
-    const user = await User.findOne({ email });
-
-    if (!user) return res.status(400).json({ message: "User not found." });
-    if (user.isVerified) return res.status(400).json({ message: "User already verified." });
-    if (user.otp !== otp) return res.status(400).json({ message: "Invalid OTP." });
-    if (new Date() > user.otpExpiresAt) return res.status(400).json({ message: "OTP expired." });
-
-    user.isVerified = true;
-    user.otp = null;
-    user.otpExpiresAt = null;
 
     const { accessToken, refreshToken } = generateTokens(user._id);
     user.refreshToken = refreshToken;
@@ -109,23 +51,34 @@ exports.verifyOTP = async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
-    res.status(200).json({ message: "Verification successful.", accessToken, user: { id: user._id, email: user.email } });
+    res.status(200).json({ 
+      message: "Registration successful.", 
+      accessToken, 
+      user: { id: user._id, email: user.email } 
+    });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error during OTP verification." });
+    console.error("Firebase register error:", error);
+    res.status(500).json({ message: "Server error during registration." });
   }
 };
 
-exports.login = async (req, res) => {
+exports.loginFirebase = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { idToken } = req.body;
+    if (!idToken) return res.status(400).json({ message: "Firebase ID token is required." });
+
+    // Verify Firebase token
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const email = decodedToken.email;
+
     const user = await User.findOne({ email });
 
-    if (!user) return res.status(400).json({ message: "Invalid credentials." });
-    if (!user.isVerified) return res.status(400).json({ message: "Please verify your email first." });
+    if (!user) return res.status(400).json({ message: "User not found. Please register first." });
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: "Invalid credentials." });
+    // Assuming if they logged in with Firebase, they own the email
+    if (!user.isVerified) {
+      user.isVerified = true;
+    }
 
     const { accessToken, refreshToken } = generateTokens(user._id);
     user.refreshToken = refreshToken;
@@ -140,7 +93,7 @@ exports.login = async (req, res) => {
 
     res.status(200).json({ message: "Login successful", accessToken, user: { id: user._id, email: user.email } });
   } catch (error) {
-    console.error(error);
+    console.error("Firebase login error:", error);
     res.status(500).json({ message: "Server error during login." });
   }
 };
