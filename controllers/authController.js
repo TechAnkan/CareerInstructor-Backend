@@ -26,6 +26,9 @@ exports.registerFirebase = async (req, res) => {
     // Check if user exists
     let user = await User.findOne({ email });
     if (user) {
+      if (!user.isVerified) {
+        return res.status(200).json({ message: "Account created previously. Please check your email to verify your account before logging in.", requireVerification: true });
+      }
       return res.status(400).json({ message: "User already exists." });
     }
 
@@ -35,26 +38,13 @@ exports.registerFirebase = async (req, res) => {
       name, 
       mobile, 
       address, 
-      isVerified: true, // Firebase handled verification (or handles it via email link)
-      password: "firebase_user_no_password" // Placeholder since Firebase handles password
-    });
-
-    const { accessToken, refreshToken } = generateTokens(user._id);
-    user.refreshToken = refreshToken;
-    await user.save();
-
-    // Set refresh token in HTTP-only cookie
-    res.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'Strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+      isVerified: false, // Must be verified via email link
+      password: "firebase_user_no_password"
     });
 
     res.status(200).json({ 
-      message: "Registration successful.", 
-      accessToken, 
-      user: { id: user._id, email: user.email } 
+      message: "Registration successful. Please verify your email.",
+      requireVerification: true
     });
   } catch (error) {
     console.error("Firebase register error:", error);
@@ -71,11 +61,15 @@ exports.loginFirebase = async (req, res) => {
     const decodedToken = await admin.auth().verifyIdToken(idToken);
     const email = decodedToken.email;
 
+    // Check if email is verified in Firebase
+    if (!decodedToken.email_verified) {
+      return res.status(403).json({ message: "Please verify your email before logging in. Check your inbox for the verification link." });
+    }
+
     const user = await User.findOne({ email });
 
     if (!user) return res.status(400).json({ message: "User not found. Please register first." });
 
-    // Assuming if they logged in with Firebase, they own the email
     if (!user.isVerified) {
       user.isVerified = true;
     }
@@ -144,5 +138,35 @@ exports.logout = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error during logout." });
+  }
+};
+
+exports.clearUnverifiedUser = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: "Email is required." });
+
+    try {
+      const userRecord = await admin.auth().getUserByEmail(email);
+      if (userRecord.emailVerified === false) {
+        // Delete from Firebase
+        await admin.auth().deleteUser(userRecord.uid);
+        // Delete from MongoDB if exists
+        await User.deleteOne({ email });
+        return res.status(200).json({ message: "Unverified account cleared." });
+      } else {
+        return res.status(400).json({ message: "Email is already in use by a verified account." });
+      }
+    } catch (firebaseErr) {
+      if (firebaseErr.code === 'auth/user-not-found') {
+        // User not in firebase, clean up mongodb just in case
+        await User.deleteOne({ email });
+        return res.status(200).json({ message: "Cleared." });
+      }
+      throw firebaseErr;
+    }
+  } catch (error) {
+    console.error("Clear unverified error:", error);
+    res.status(500).json({ message: "Server error." });
   }
 };
